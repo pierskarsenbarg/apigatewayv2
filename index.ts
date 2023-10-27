@@ -25,22 +25,14 @@ const lambdaRoleAttachment = new aws.iam.RolePolicyAttachment("lambdaRoleAttachm
   policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
 });
 
-const repo = new awsx.ecr.Repository("repo");
-
-const image = new awsx.ecr.Image("image", {
-    dockerfile: "dockerapp/Dockerfile",
-    path: "dockerapp",
-    repositoryUrl: repo.url
-})
-
 const lambda = new aws.lambda.Function("lambdaFunction", {
-//   code: new pulumi.asset.AssetArchive({
-//     ".": new pulumi.asset.FileArchive("./app"),
-//   }),
-//   runtime: "nodejs18.x",
-//   handler: "index.handler",
-    imageUri: image.imageUri,
-    packageType: "Image",
+  code: new pulumi.asset.AssetArchive({
+    ".": new pulumi.asset.FileArchive("./app"),
+  }),
+  runtime: "nodejs18.x",
+  handler: "index.handler",
+    // imageUri: image.imageUri,
+    packageType: "Zip",
     role: lambdaRole.arn,
 });
 
@@ -82,5 +74,49 @@ const stage = new aws.apigatewayv2.Stage("apiStage", {
   ],
   autoDeploy: true,
 }, {dependsOn: [route]});
+
+const cert = new aws.acm.Certificate("acmcert", {
+    domainName: "piers.pulumi-ce.team",
+    validationMethod: "DNS"
+});
+
+const certValidationDns = new aws.route53.Record("certValidation", {
+  name: cert.domainValidationOptions[0].resourceRecordName,
+  zoneId: "Z1MOFT0W6HPL6N",
+  type: cert.domainValidationOptions[0].resourceRecordType,
+  records: [cert.domainValidationOptions[0].resourceRecordValue],
+  ttl: 60
+})
+
+const certValidation = new aws.acm.CertificateValidation("certValidation", {
+  certificateArn: cert.arn,
+  validationRecordFqdns: [certValidationDns.fqdn]
+})
+
+const domainName = new aws.apigatewayv2.DomainName("domainName", {
+  domainName: "piers.pulumi-ce.team",
+  domainNameConfiguration: {
+    certificateArn: cert.arn,
+    endpointType: "REGIONAL",
+    securityPolicy: "TLS_1_2"
+  }
+}, {dependsOn: [certValidation]})
+
+const dnsRecord = new aws.route53.Record("dnsRecord", {
+  name: domainName.domainName,
+  type: "A",
+  zoneId: "Z1MOFT0W6HPL6N",
+  aliases: [{
+    name: domainName.domainNameConfiguration.targetDomainName,
+    evaluateTargetHealth: false,
+    zoneId: domainName.domainNameConfiguration.hostedZoneId
+  }]
+})
+
+const apiMapping = new aws.apigatewayv2.ApiMapping("apimapping", {
+  apiId: apigw.id,
+  domainName: domainName.id,
+  stage: stage.id
+})
 
 export const endpoint = pulumi.interpolate`${stage.invokeUrl}`;
